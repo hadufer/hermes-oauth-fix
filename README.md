@@ -106,7 +106,7 @@ One thing to remember: if `hermes` is already running, restart it. Python only r
 ## Verifying
 
 ```bash
-hermes chat --provider anthropic "test"
+hermes chat --provider anthropic
 ```
 
 Before: HTTP 400 with the usage message. After: a normal reply. Tool calls, memory, skill loading, MEDIA file delivery all keep working.
