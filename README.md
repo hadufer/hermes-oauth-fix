@@ -105,11 +105,13 @@ One thing to remember: if `hermes` is already running, restart it. Python only r
 
 ## Verifying
 
+Start a chat session:
+
 ```bash
 hermes chat --provider anthropic
 ```
 
-Before: HTTP 400 with the usage message. After: a normal reply. Tool calls, memory, skill loading, MEDIA file delivery all keep working.
+Then send any message inside the session. Before the patch the first message comes back as HTTP 400 with the usage message. After, you get a normal reply, and tool calls, memory, skill loading, and MEDIA file delivery all keep working.
 
 ## Reverting
 
