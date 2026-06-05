@@ -27,3 +27,10 @@ hermes-debug-*.json.headers.json
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Tooling / local agent config
+.serena/
+
+# OAuth leak-diagnostic dumps (HERMES_OAUTH_FIX_DUMP_DIR)
+oauth-dump/
+oauth-*.json

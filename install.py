@@ -81,6 +81,8 @@ def _oauth_unrename_tool(name: str) -> str:
         return name[len(_OAUTH_TOOL_PLAYWRIGHT_PREFIX):]
     if name.startswith(_OAUTH_TOOL_FAKE_SERVER_PREFIX):
         return name[len(_OAUTH_TOOL_FAKE_SERVER_PREFIX):]
+    if name.startswith("mcp__"):
+        return name
     if name.startswith(_MCP_TOOL_PREFIX):
         return name[len(_MCP_TOOL_PREFIX):]
     return name
@@ -151,9 +153,13 @@ ADAPTER_OAUTH_ORIGINAL = '''        # 2. Sanitize system prompt — replace prod
                 block["text"] = text
 
         # 3. Prefix tool names with mcp_ (Claude Code convention)
+        #    Skip names that already begin with the marker — native MCP server
+        #    tools (from mcp_servers: in config.yaml) are registered under their
+        #    full mcp_<server>_<tool> name and would double-prefix otherwise,
+        #    breaking round-trip registry lookup in normalize_response. GH-25255.
         if anthropic_tools:
             for tool in anthropic_tools:
-                if "name" in tool:
+                if "name" in tool and not tool["name"].startswith(_MCP_TOOL_PREFIX):
                     tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
 
         # 4. Prefix tool names in message history (tool_use and tool_result blocks)
@@ -217,6 +223,33 @@ ADAPTER_OAUTH_PATCHED = '''        import re as _re
                     text,
                 )
 
+                text = _re.sub(
+                    r"#\\s*Nous Subscription\\n[\\s\\S]*?hermes status\\.\\s*",
+                    "",
+                    text,
+                )
+
+                text = _re.sub(
+                    r"#\\s*Kanban task execution protocol\\n[\\s\\S]*?cross-agent handoffs that outlive one API loop\\.\\s*",
+                    "",
+                    text,
+                )
+
+                text = text.replace("~/.hermes/", "~/.claude/")
+                text = text.replace("$HERMES_", "$CLAUDE_")
+                text = text.replace(".hermes.md", ".claude.md")
+                text = text.replace("HERMES.md", "CLAUDE.md")
+                text = text.replace("HERMES_HOME", "CLAUDE_HOME")
+
+                text = _re.sub(
+                    r"\\bhermes\\s+(setup|status|config|tools|kanban|chat|run|skill|skills|profile|profiles|memory|memories)\\b",
+                    r"claude \\1",
+                    text,
+                )
+
+                text = _re.sub(r"\\bNous(?=\\s+(?:subscription|Subscription|auth|managed|provider))", "Anthropic", text)
+                text = _re.sub(r"\\bnous(?=[-_](?:subscription|auth|managed))", "anthropic", text)
+
                 _HERMES_FN_RENAME = (
                     ("session_search", "mcp__h__session_search"),
                     ("skill_manage",   "mcp__h__skill_manage"),
@@ -241,6 +274,8 @@ ADAPTER_OAUTH_PATCHED = '''        import re as _re
                      "Your output is delivered as SMS."),
                     ("You are running as a scheduled cron job.",
                      "This invocation is a scheduled non-interactive run."),
+                    ("You are in the Hermes WebUI, a browser-based chat interface.",
+                     "Your output is delivered through a browser-based chat interface."),
                 ]
                 for _old, _new in _PLATFORM_INTRO_REWRITES:
                     text = text.replace(_old, _new)
@@ -277,7 +312,28 @@ ADAPTER_OAUTH_PATCHED = '''        import re as _re
                         if block.get("type") == "tool_use" and "name" in block:
                             block["name"] = _oauth_rename_tool(block["name"])
                         elif block.get("type") == "tool_result" and "tool_use_id" in block:
-                            pass'''
+                            pass
+
+        _oauth_dump_dir = __import__("os").environ.get("HERMES_OAUTH_FIX_DUMP_DIR")
+        if _oauth_dump_dir:
+            try:
+                import os as _os
+                import json as _json
+                import time as _time
+                _os.makedirs(_oauth_dump_dir, exist_ok=True)
+                _dump_path = _os.path.join(
+                    _oauth_dump_dir,
+                    f"oauth-{int(_time.time()*1000)}.json",
+                )
+                with open(_dump_path, "w", encoding="utf-8") as _f:
+                    _json.dump({
+                        "model": model,
+                        "system": system,
+                        "tools": anthropic_tools,
+                        "messages": anthropic_messages,
+                    }, _f, indent=2, ensure_ascii=False, default=str)
+            except Exception:
+                pass'''
 
 
 TRANSPORT_PREFIX_ORIGINAL = '''        strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
@@ -290,7 +346,17 @@ TRANSPORT_PREFIX_PATCHED = '''        strip_tool_prefix = kwargs.get("strip_tool
 TRANSPORT_STRIP_ORIGINAL = '''            elif block.type == "tool_use":
                 name = block.name
                 if strip_tool_prefix and name.startswith(_MCP_PREFIX):
-                    name = name[len(_MCP_PREFIX):]'''
+                    stripped = name[len(_MCP_PREFIX):]
+                    # Only strip the mcp_ prefix for OAuth-injected tools
+                    # (where Hermes adds the prefix when sending to Anthropic
+                    # and must remove it on the way back).  Native MCP server
+                    # tools (from mcp_servers: in config.yaml) are registered
+                    # in the tool registry under their FULL mcp_<server>_<tool>
+                    # name and must NOT be stripped.  GH-25255.
+                    from tools.registry import registry as _tool_registry
+                    if (_tool_registry.get_entry(stripped)
+                            and not _tool_registry.get_entry(name)):
+                        name = stripped'''
 
 TRANSPORT_STRIP_PATCHED = '''            elif block.type == "tool_use":
                 name = block.name

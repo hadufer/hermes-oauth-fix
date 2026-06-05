@@ -25,6 +25,8 @@ Two files, `agent/anthropic_adapter.py` and `agent/transports/anthropic.py`. The
 - Outbound tool names get renamed. Hermes' `read_file` / `terminal` / `skill_manage` go out as `Read` / `Bash` / `mcp__playwright__browser_click` / `mcp__h__skill_manage`. The originals come back on the way in so the dispatcher still works.
 - The system prompt loses its most distinctive Hermes signatures: the `<available_skills>` XML block, the `Host:` / `Shell:` / `Conversation started:` blocks, the `# Claude Code Persona` header, NousResearch URLs, the word "Hermes", the WSL environment hint, `hermes` CLI references, and the "You are X" platform intros. Functional guidance stays put (memory tool, skill loading, MEDIA tags, persona).
 - The `<available_skills>` catalog gets re-emitted as flat markdown. Every skill name and description survives, in a format that no longer matches what the detector is looking for.
+- The `# Nous Subscription` capability block (added when web/browser tools are loaded) and the `# Kanban task execution protocol` block (added when kanban tools are loaded) get stripped entirely — both leak product names that survive the per-word rewrites.
+- Lowercase path/env-var leaks get rewritten: `~/.hermes/` → `~/.claude/`, `$HERMES_*` → `$CLAUDE_*`, `.hermes.md` → `.claude.md`, `HERMES.md` → `CLAUDE.md`, `HERMES_HOME` → `CLAUDE_HOME`. Inline `hermes <cmd>` references (setup, status, config, tools, kanban, etc.) get rewritten to `claude <cmd>`.
 - Tool calls coming back from Anthropic go through the rename in reverse before Hermes' dispatcher fires.
 
 The model still sees the same tools and the same instructions, so nothing functional breaks.
@@ -121,13 +123,33 @@ python3 install.py --uninstall
 
 This restores both files from the `.oauth-fix.bak` backups. The patch never touches any other file, so the uninstall is complete.
 
+## Diagnosing new leaks (when Hermes updates)
+
+Hermes evolves. New prompt blocks, new env vars, new commands — anything that still says "Hermes" or "Nous" on the wire can re-trigger the detector. To see what's actually being sent to Anthropic after the patch runs, set `HERMES_OAUTH_FIX_DUMP_DIR` to a writable directory:
+
+```powershell
+# PowerShell
+$env:HERMES_OAUTH_FIX_DUMP_DIR = "$env:USERPROFILE\Desktop\oauth-dump"
+hermes chat --provider anthropic
+```
+
+```bash
+# Linux / macOS / WSL
+export HERMES_OAUTH_FIX_DUMP_DIR=~/oauth-dump
+hermes chat --provider anthropic
+```
+
+Each outbound request writes a `oauth-<ms-timestamp>.json` file containing the post-sanitization `model`, `system` blocks, `tools`, and `messages` — exactly what gets serialized into the Anthropic Messages API call. Grep the dump for `Hermes`, `Nous`, `hermes`, or any other product-name fragments; whatever you find there is what's still leaking. Add the corresponding strip/rewrite to `ADAPTER_OAUTH_PATCHED` in `install.py` and re-run `python install.py` (it's idempotent — it'll restore the backup, then re-patch with the updated rules).
+
+Unset the env var (or delete the dump dir) when you're done — every request writes a new file.
+
 ## Known limitations
 
 Tested on Windows native with Sonnet 4.6 and Opus 4.7. Linux, macOS, and WSL strips are in place but haven't been validated against a live install on those platforms. If Anthropic reads a platform-specific signature that wasn't in our sample, you may need to extend the regex set.
 
-Messaging adapters (Telegram, Discord, Slack, email, SMS, cron) have their "You are X" intros rewritten generically. If you run Hermes through one of those and the 400 comes back, capture the outgoing payload and see what's still in there.
+Messaging adapters (Telegram, Discord, Slack, email, SMS, cron) and the browser WebUI surface have their "You are X" intros rewritten generically. The WebUI intro gets an explicit sentence rewrite because a bare `Hermes` → `Claude Code` swap would still leave the product-specific term "WebUI" on the wire. If you run Hermes through a surface whose intro isn't covered and the 400 comes back, capture the outgoing payload (see *Diagnosing new leaks* above) and see what's still in there.
 
-Future Hermes versions that change the prompt structure or add new top-level kwargs will probably need additional strips. The detector evolves, Hermes evolves, this patch will eventually need updating.
+Future Hermes versions that change the prompt structure or add new top-level kwargs will probably need additional strips. The detector evolves, Hermes evolves, this patch will eventually need updating. When `python install.py` reports `original OAuth block not found (file may be from a different Hermes version)` or `original prefix/strip block not found`, the anchor strings in `install.py` (`ADAPTER_OAUTH_ORIGINAL`, `TRANSPORT_PREFIX_ORIGINAL`, `TRANSPORT_STRIP_ORIGINAL`) need to be re-synced against the current upstream code in `agent/anthropic_adapter.py` and `agent/transports/anthropic.py`.
 
 `output_config` and `thinking.adaptive` are real Anthropic API features for Claude 4.6+. They stay in the request and are not signatures.
 
