@@ -18,7 +18,13 @@ inst = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(inst)
 
 # Locate the hermes-agent install the same way the installer does (portable).
-HERMES = str(inst.discover_hermes())
+try:
+    HERMES = str(inst.discover_hermes())
+except SystemExit as exc:  # no install found -> skip, don't hard-crash
+    print(f"SKIP: {exc}")
+    sys.exit(0)
+
+USED_FALLBACK = False  # set True when the live registry can't be reached
 
 ns: dict = {"Dict": Dict, "_MCP_TOOL_PREFIX": "mcp_"}
 exec(inst.ADAPTER_HELPERS_BLOCK, ns)
@@ -34,8 +40,10 @@ def real_tools() -> list:
         if names:
             return sorted(set(names))
     except Exception as exc:  # noqa: BLE001
+        global USED_FALLBACK
+        USED_FALLBACK = True
         print(f"  (registry import failed: {exc.__class__.__name__}: {exc})")
-        print("  → falling back to static tool list\n")
+        print("  → falling back to a FROZEN static tool list (NOT authoritative)\n")
     # Static fallback (scanned from tools/ name="..." declarations)
     return sorted(set([
         "browser_back", "browser_cdp", "browser_click", "browser_console",
@@ -112,8 +120,14 @@ def main() -> int:
 
     ok = not (rt_fail or collisions or reverse)
     print("\n" + "=" * 74)
-    print("VERDICT:", "FULLY TRANSPARENT - behaves as un-patched [OK]" if ok
-          else "NOT transparent - gaps above must be fixed [FAIL]")
+    if USED_FALLBACK:
+        # Couldn't reach the live registry: the static list is frozen and may
+        # miss new 0.15.1 tools, so a green result here is NOT authoritative.
+        print("VERDICT: INCONCLUSIVE - live registry unavailable; checked a "
+              "frozen static list only (not authoritative)")
+    else:
+        print("VERDICT:", "FULLY TRANSPARENT - behaves as un-patched [OK]" if ok
+              else "NOT transparent - gaps above must be fixed [FAIL]")
     print("=" * 74)
 
     # Show the disguise scheme for a representative sample
@@ -123,7 +137,7 @@ def main() -> int:
               "mcp_filesystem_read_file", "mcp__github__create_issue"]:
         if n in tool_set:
             print(f"   {n:28s} ->  {rename(n)}")
-    return 0 if ok else 1
+    return 2 if USED_FALLBACK else (0 if ok else 1)
 
 
 if __name__ == "__main__":

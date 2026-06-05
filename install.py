@@ -280,6 +280,11 @@ ADAPTER_OAUTH_PATCHED = '''        import re as _re
                 for _old, _new in _PLATFORM_INTRO_REWRITES:
                     text = text.replace(_old, _new)
 
+                # Catch-all: a reworded WebUI hint the exact-match rewrite above
+                # missed would still leak the Hermes-only term "WebUI" after the
+                # \\bHermes\\b swap below. Claude Code has no "WebUI".
+                text = _re.sub(r"\\bWebUI\\b", "web interface", text)
+
                 text = _re.sub(
                     r"You are running inside WSL[\\s\\S]*?(?:if needed\\.|/mnt/c/Users/[^\\n]*\\n)",
                     "",
@@ -323,7 +328,7 @@ ADAPTER_OAUTH_PATCHED = '''        import re as _re
                 _os.makedirs(_oauth_dump_dir, exist_ok=True)
                 _dump_path = _os.path.join(
                     _oauth_dump_dir,
-                    f"oauth-{int(_time.time()*1000)}.json",
+                    f"oauth-{_os.getpid()}-{int(_time.time()*1000)}-{_os.urandom(3).hex()}.json",
                 )
                 with open(_dump_path, "w", encoding="utf-8") as _f:
                     _json.dump({

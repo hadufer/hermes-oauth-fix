@@ -139,7 +139,7 @@ export HERMES_OAUTH_FIX_DUMP_DIR=~/oauth-dump
 hermes chat --provider anthropic
 ```
 
-Each outbound request writes a `oauth-<ms-timestamp>.json` file containing the post-sanitization `model`, `system` blocks, `tools`, and `messages` — exactly what gets serialized into the Anthropic Messages API call. Grep the dump for `Hermes`, `Nous`, `hermes`, or any other product-name fragments; whatever you find there is what's still leaking. Add the corresponding strip/rewrite to `ADAPTER_OAUTH_PATCHED` in `install.py` and re-run `python install.py` (it's idempotent — it'll restore the backup, then re-patch with the updated rules).
+Each outbound request writes a `oauth-<pid>-<ms-timestamp>-<rand>.json` file (the pid and random suffix keep concurrent requests from overwriting each other) containing the post-sanitization `model`, `system` blocks, `tools`, and `messages` — exactly what gets serialized into the Anthropic Messages API call. Grep the dump for `Hermes`, `Nous`, `hermes`, or any other product-name fragments; whatever you find there is what's still leaking. Add the corresponding strip/rewrite to `ADAPTER_OAUTH_PATCHED` in `install.py` and re-run `python install.py` (it's idempotent — it'll restore the backup, then re-patch with the updated rules).
 
 Unset the env var (or delete the dump dir) when you're done — every request writes a new file.
 
@@ -148,6 +148,8 @@ Unset the env var (or delete the dump dir) when you're done — every request wr
 Tested on Windows native with Sonnet 4.6 and Opus 4.7. Linux, macOS, and WSL strips are in place but haven't been validated against a live install on those platforms. If Anthropic reads a platform-specific signature that wasn't in our sample, you may need to extend the regex set.
 
 Messaging adapters (Telegram, Discord, Slack, email, SMS, cron) and the browser WebUI surface have their "You are X" intros rewritten generically. The WebUI intro gets an explicit sentence rewrite because a bare `Hermes` → `Claude Code` swap would still leave the product-specific term "WebUI" on the wire. If you run Hermes through a surface whose intro isn't covered and the 400 comes back, capture the outgoing payload (see *Diagnosing new leaks* above) and see what's still in there.
+
+The tool disguise maps Hermes' browser tools onto `mcp__playwright__*` and routes everything else through a fake `mcp__h__*` server. If you configure a *real* native MCP server named exactly `playwright` or `h`, its tool names collide with those disguise prefixes and the reverse-mapping would strip them on the way back, so the dispatcher wouldn't find them. Pick any other server name and the collision disappears. The `test_tool_mapping_bijection.py` check proves the round-trip is collision-free for every tool in your actual registry.
 
 Future Hermes versions that change the prompt structure or add new top-level kwargs will probably need additional strips. The detector evolves, Hermes evolves, this patch will eventually need updating. When `python install.py` reports `original OAuth block not found (file may be from a different Hermes version)` or `original prefix/strip block not found`, the anchor strings in `install.py` (`ADAPTER_OAUTH_ORIGINAL`, `TRANSPORT_PREFIX_ORIGINAL`, `TRANSPORT_STRIP_ORIGINAL`) need to be re-synced against the current upstream code in `agent/anthropic_adapter.py` and `agent/transports/anthropic.py`.
 

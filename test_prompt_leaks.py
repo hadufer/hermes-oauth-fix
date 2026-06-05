@@ -21,7 +21,12 @@ def _prompt_builder_path() -> str:
     )
     inst = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(inst)
-    return str(inst.discover_hermes() / "agent" / "prompt_builder.py")
+    try:
+        root = inst.discover_hermes()
+    except SystemExit as exc:  # no install found -> skip, don't hard-crash
+        print(f"SKIP: {exc}")
+        sys.exit(0)
+    return str(root / "agent" / "prompt_builder.py")
 
 
 ADAPTER = _prompt_builder_path()
@@ -101,12 +106,15 @@ def sanitize(text: str) -> str:
     text = re.sub(r"\bnous(?=[-_](?:subscription|auth|managed))", "anthropic", text)
     for old, new in (("session_search", "mcp__h__session_search"), ("skill_manage", "mcp__h__skill_manage"), ("skill_view", "mcp__h__skill_view"), ("skills_list", "mcp__h__skills_list")):
         text = re.sub(rf"\b{old}\b", new, text)
-    # Platform-intro rewrites (subset relevant to leak hunt): webui hint leaks
-    # "WebUI" after the \bHermes\b swap, so rewrite the whole sentence first.
+    # Platform-intro rewrites — leak-focused MIRROR of install.py
+    # ADAPTER_OAUTH_PATCHED (keep in sync). Only the product-name-bearing rules
+    # are modeled; non-leaking intro rewrites (CLI/Discord/...) and the WSL
+    # strip are intentionally omitted — they remove no product name.
     text = text.replace(
         "You are in the Hermes WebUI, a browser-based chat interface.",
         "Your output is delivered through a browser-based chat interface.",
     )
+    text = re.sub(r"\bWebUI\b", "web interface", text)  # catch-all, mirrors install.py
     text = re.sub(r"\bHermes\b", "Claude Code", text)
     return text
 

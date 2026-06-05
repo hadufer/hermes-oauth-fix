@@ -29,7 +29,11 @@ def _hermes_root() -> str:
     )
     inst = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(inst)
-    return str(inst.discover_hermes())
+    try:
+        return str(inst.discover_hermes())
+    except SystemExit as exc:  # no install found -> skip, don't hard-crash
+        print(f"SKIP: {exc}")
+        sys.exit(0)
 
 
 def main() -> int:
@@ -153,7 +157,10 @@ def main() -> int:
         text = re.sub(r"\bnous(?=[-_](?:subscription|auth|managed))", "anthropic", text)
         for old, new in (("session_search", "mcp__h__session_search"), ("skill_manage", "mcp__h__skill_manage"), ("skill_view", "mcp__h__skill_view"), ("skills_list", "mcp__h__skills_list")):
             text = re.sub(rf"\b{old}\b", new, text)
+        # Leak-focused MIRROR of install.py ADAPTER_OAUTH_PATCHED (keep in sync);
+        # non-leaking intro rewrites and the WSL strip are omitted on purpose.
         text = text.replace("You are in the Hermes WebUI, a browser-based chat interface.", "Your output is delivered through a browser-based chat interface.")
+        text = re.sub(r"\bWebUI\b", "web interface", text)  # catch-all, mirrors install.py
         text = re.sub(r"\bHermes\b", "Claude Code", text)
         return text
 
