@@ -1,5 +1,5 @@
 """Transparency proof: does the tool-name mapping round-trip for EVERY
-Hermes 0.15.1 tool? If yes, tool dispatch behaves exactly as un-patched.
+Hermes 0.16.0 tool? If yes, tool dispatch behaves exactly as un-patched.
 
 Tests, over the real registered tool set:
   1. Round-trip:   unrename(rename(n)) == n   for every tool n.
@@ -31,7 +31,7 @@ exec(inst.ADAPTER_HELPERS_BLOCK, ns)
 rename = ns["_oauth_rename_tool"]
 unrename = ns["_oauth_unrename_tool"]
 
-# ── 2. Enumerate the REAL 0.15.1 tool set (registry = ground truth) ──
+# ── 2. Enumerate the REAL 0.16.0 tool set (registry = ground truth) ──
 def real_tools() -> list:
     sys.path.insert(0, HERMES)
     try:
@@ -72,7 +72,7 @@ def main() -> int:
     tools = sorted(set(tools))
 
     print("=" * 74)
-    print(f"BIJECTION TEST over {len(tools)} Hermes 0.15.1 tool names")
+    print(f"BIJECTION TEST over {len(tools)} Hermes 0.16.0 tool names")
     print("=" * 74)
 
     rt_fail = []          # round-trip failures
@@ -122,7 +122,7 @@ def main() -> int:
     print("\n" + "=" * 74)
     if USED_FALLBACK:
         # Couldn't reach the live registry: the static list is frozen and may
-        # miss new 0.15.1 tools, so a green result here is NOT authoritative.
+        # miss new 0.16.0 tools, so a green result here is NOT authoritative.
         print("VERDICT: INCONCLUSIVE - live registry unavailable; checked a "
               "frozen static list only (not authoritative)")
     else:

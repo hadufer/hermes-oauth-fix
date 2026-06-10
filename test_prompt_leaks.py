@@ -1,4 +1,4 @@
-"""Re-study (v2): what in Hermes 0.15.1's prompt survives the current sanitizer.
+"""Re-study (v2): what in Hermes 0.16.0's prompt survives the current sanitizer.
 
 Precise reproduction — extracts ONLY the named constants that
 agent/system_prompt.py actually concatenates into the stable system prompt
@@ -38,6 +38,7 @@ PROMPT_CONSTANTS = [
     "MEMORY_GUIDANCE",
     "SESSION_SEARCH_GUIDANCE",
     "SKILLS_GUIDANCE",
+    "STEER_CHANNEL_NOTE",        # 0.16.0: mid-turn steering note (mentions Hermes)
     "KANBAN_GUIDANCE",            # stripped — included to verify the strip
     "TASK_COMPLETION_GUIDANCE",
     "TOOL_USE_ENFORCEMENT_GUIDANCE",
@@ -96,7 +97,7 @@ def sanitize(text: str) -> str:
     text = re.sub(r"\s*\(e\.g\.\s*`hermes [^`]*`(?:,\s*`hermes [^`]*`)*\)", "", text)
     text = re.sub(r"#\s*Nous Subscription\n[\s\S]*?hermes status\.\s*", "", text)
     text = re.sub(r"#\s*Kanban task execution protocol\n[\s\S]*?cross-agent handoffs that outlive one API loop\.\s*", "", text)
-    text = text.replace("~/.hermes/", "~/.claude/")
+    text = text.replace(".hermes/", ".claude/")
     text = text.replace("$HERMES_", "$CLAUDE_")
     text = text.replace(".hermes.md", ".claude.md")
     text = text.replace("HERMES.md", "CLAUDE.md")
@@ -139,13 +140,13 @@ def main() -> int:
     consts = extract_named_constants(ADAPTER, PROMPT_CONSTANTS)
     missing = [n for n in PROMPT_CONSTANTS if n not in consts]
     if missing:
-        print(f"  NOTE: constants not found (renamed/removed in 0.15.1?): {missing}\n")
+        print(f"  NOTE: constants not found (renamed/removed in 0.16.0?): {missing}\n")
 
     raw = "\n\n".join(consts.get(n, "") for n in PROMPT_CONSTANTS) + "\n\n" + NOUS_BLOCK
     sanitized = sanitize(raw)
 
     print("=" * 74)
-    print("RESIDUAL LEAKS — current sanitizer vs Hermes 0.15.1 actual prompt blocks")
+    print("RESIDUAL LEAKS — current sanitizer vs Hermes 0.16.0 actual prompt blocks")
     print("=" * 74)
 
     total = 0

@@ -235,7 +235,7 @@ ADAPTER_OAUTH_PATCHED = '''        import re as _re
                     text,
                 )
 
-                text = text.replace("~/.hermes/", "~/.claude/")
+                text = text.replace(".hermes/", ".claude/")
                 text = text.replace("$HERMES_", "$CLAUDE_")
                 text = text.replace(".hermes.md", ".claude.md")
                 text = text.replace("HERMES.md", "CLAUDE.md")
@@ -401,9 +401,20 @@ def is_patched(file_path: Path, marker: str) -> bool:
 
 
 def backup_once(file_path: Path) -> Path:
+    # (Re)create the backup from the CURRENT file every time we patch.
+    # patch_adapter / patch_transport only reach this after confirming the
+    # file is UNPATCHED (marker absent), so the live contents are always a
+    # pristine original — safe to capture.
+    #
+    # Refreshing (rather than the old "write only if absent") matters when
+    # Hermes auto-updates: the updater overwrites a previously-patched file
+    # with a fresh upstream version (our marker is gone) but leaves the OLD
+    # .oauth-fix.bak in place. That stale backup is from a *different* Hermes
+    # version; without this refresh a later --uninstall would restore it over
+    # the current install, silently downgrading two core files. See README
+    # "Diagnosing new leaks (when Hermes updates)".
     backup = file_path.with_suffix(file_path.suffix + BACKUP_SUFFIX)
-    if not backup.exists():
-        shutil.copy2(file_path, backup)
+    shutil.copy2(file_path, backup)
     return backup
 
 
@@ -416,9 +427,30 @@ def restore_backup(file_path: Path) -> bool:
     return True
 
 
+def _ensure_original(file_path: Path, marker: str, content: str):
+    """Return (content, ok) with the file guaranteed to be in its ORIGINAL,
+    unpatched state.
+
+    If the file is already patched, restore the pristine original from its
+    backup and re-read it, so a re-run with an updated rule set actually
+    re-patches (the documented "re-run install.py to apply updated rules"
+    flow) instead of stopping at "already-patched". ``ok`` is False only when
+    the file is patched but has no backup to recover from — the caller then
+    leaves the existing patch in place.
+    """
+    if marker not in content:
+        return content, True
+    backup = file_path.with_suffix(file_path.suffix + BACKUP_SUFFIX)
+    if not backup.exists():
+        return content, False
+    shutil.copy2(backup, file_path)
+    return file_path.read_text(encoding="utf-8"), True
+
+
 def patch_adapter(adapter_path: Path) -> str:
     content = adapter_path.read_text(encoding="utf-8")
-    if PATCHED_MARKER_ADAPTER in content:
+    content, ok = _ensure_original(adapter_path, PATCHED_MARKER_ADAPTER, content)
+    if not ok:
         return "already-patched"
 
     if ADAPTER_HELPERS_INSERT_AFTER not in content:
@@ -440,7 +472,8 @@ def patch_adapter(adapter_path: Path) -> str:
 
 def patch_transport(transport_path: Path) -> str:
     content = transport_path.read_text(encoding="utf-8")
-    if PATCHED_MARKER_TRANSPORT in content:
+    content, ok = _ensure_original(transport_path, PATCHED_MARKER_TRANSPORT, content)
+    if not ok:
         return "already-patched"
 
     if TRANSPORT_PREFIX_ORIGINAL not in content:

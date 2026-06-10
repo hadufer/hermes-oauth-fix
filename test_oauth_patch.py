@@ -12,7 +12,6 @@ import os
 import re
 import sys
 import tempfile
-import time
 
 
 def _hermes_root() -> str:
@@ -130,6 +129,33 @@ def main() -> int:
         "You are in the Hermes WebUI, a browser-based chat interface. Full Markdown "
         "rendering is supported.\n"
         "Look for .hermes.md or HERMES.md files. Check $HERMES_HOME for installation.\n"
+        "\n"
+        # --- 0.16.0-specific blocks ---
+        "## Mid-turn user steering\n"
+        "While you work, the user can send an out-of-band message that Hermes appends to "
+        "the end of a tool result.\n"
+        "\n"
+        "Runtime surface: you're running inside the Hermes desktop GUI app.\n"
+        "\n"
+        "Terminal backend: modal. Your tools all operate inside this modal environment — "
+        "NOT on the machine where Hermes itself is running. The cwd of the Hermes process "
+        "is irrelevant.\n"
+        "\n"
+        "Active Hermes profile: default. Other profiles (if any) live under "
+        "~/.hermes/profiles/<name>/. Each profile has its own skills/, plugins/, cron/, "
+        "and memories/.\n"
+        "\n"
+        "## Skills (mandatory)\n"
+        "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
+        "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
+        "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
+        "first. It has the actual commands (e.g. `hermes config set foo`, `hermes tools`, "
+        "`hermes setup`).\n"
+        "<available_skills>\n"
+        "  software-development: Build and debug software.\n"
+        "    - plan: Plan mode: write an actionable markdown plan to .hermes/plans then act.\n"
+        "    - requesting-code-review: Pre-commit review of the working tree.\n"
+        "</available_skills>\n"
     )
 
     def sanitize(text: str) -> str:
@@ -147,7 +173,7 @@ def main() -> int:
         text = re.sub(r"\s*\(e\.g\.\s*`hermes [^`]*`(?:,\s*`hermes [^`]*`)*\)", "", text)
         text = re.sub(r"#\s*Nous Subscription\n[\s\S]*?hermes status\.\s*", "", text)
         text = re.sub(r"#\s*Kanban task execution protocol\n[\s\S]*?cross-agent handoffs that outlive one API loop\.\s*", "", text)
-        text = text.replace("~/.hermes/", "~/.claude/")
+        text = text.replace(".hermes/", ".claude/")
         text = text.replace("$HERMES_", "$CLAUDE_")
         text = text.replace(".hermes.md", ".claude.md")
         text = text.replace("HERMES.md", "CLAUDE.md")
@@ -201,42 +227,57 @@ def main() -> int:
 
     print()
     print("=" * 70)
-    print("3. DUMP DIAGNOSTIC")
+    print("3. END-TO-END: REAL build_anthropic_kwargs(is_oauth=True) + DUMP")
     print("=" * 70)
+    # Feed the RAW (unsanitized) prompt through the actual code path that runs
+    # before every Anthropic request, with the diagnostic dump enabled, then
+    # grep what it serialized. This validates the live patched sanitizer — not
+    # the mirror above — so it catches drift between the two and any regression
+    # in the real adapter for this Hermes version.
+    e2e_leaks = []
     with tempfile.TemporaryDirectory() as td:
-        sample_system = [{"type": "text", "text": sanitized}]
-        sample_tools = [
-            {"name": "Read", "input_schema": {}},
-            {"name": "mcp__h__skill_view", "input_schema": {}},
-        ]
-        sample_messages = [{"role": "user", "content": "hi"}]
-        sample_model = "claude-opus-4-7"
-
-        dump_path = os.path.join(td, f"oauth-{int(time.time() * 1000)}.json")
-        with open(dump_path, "w", encoding="utf-8") as f:
-            json.dump(
-                {
-                    "model": sample_model,
-                    "system": sample_system,
-                    "tools": sample_tools,
-                    "messages": sample_messages,
-                },
-                f,
-                indent=2,
-                ensure_ascii=False,
-                default=str,
+        os.environ["HERMES_OAUTH_FIX_DUMP_DIR"] = td
+        try:
+            messages = [
+                {"role": "system", "content": SAMPLE_PROMPT},
+                {"role": "user", "content": "hi"},
+            ]
+            tools = [
+                {"type": "function", "function": {"name": n, "description": "d",
+                 "parameters": {"type": "object", "properties": {}}}}
+                for n in ("read_file", "skill_view", "browser_click")
+            ]
+            adapter.build_anthropic_kwargs(
+                "claude-opus-4-7", messages, tools, 4096, None, is_oauth=True,
             )
+        finally:
+            os.environ.pop("HERMES_OAUTH_FIX_DUMP_DIR", None)
 
-        files = os.listdir(td)
-        print(f"  [OK] dump wrote {len(files)} file: {files}")
-        with open(os.path.join(td, files[0]), encoding="utf-8") as f:
-            loaded = json.load(f)
+        dumps = [f for f in os.listdir(td) if f.endswith(".json")]
+        if not dumps:
+            print("  [FAIL] no dump written — sanitizer path did not run")
+            return 1
+        loaded = json.load(open(os.path.join(td, dumps[0]), encoding="utf-8"))
         print(f"  [OK] dump JSON valid; keys = {list(loaded.keys())}")
         print(f"  [OK] tools serialized: {[t['name'] for t in loaded['tools']]}")
 
+        real_system = "\n".join(
+            b.get("text", "") for b in loaded.get("system", []) if isinstance(b, dict)
+        )
+        for pat, label in patterns:
+            m = re.findall(pat, real_system)
+            if m:
+                e2e_leaks.append((label, len(m), m[:3]))
+        if e2e_leaks:
+            print("\n  RESIDUAL LEAKS in REAL dumped system prompt:")
+            for label, count, examples in e2e_leaks:
+                print(f"    [LEAK] {label:35s} x{count}  examples: {examples}")
+        else:
+            print("  [OK] real dumped system prompt has no residual leaks")
+
     print()
     print("DONE")
-    return 0 if (fail == 0 and not leaks) else 1
+    return 0 if (fail == 0 and not leaks and not e2e_leaks) else 1
 
 
 if __name__ == "__main__":
