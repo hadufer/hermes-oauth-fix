@@ -155,16 +155,18 @@ def main() -> int:
         "  software-development: Build and debug software.\n"
         "    - plan: Plan mode: write an actionable markdown plan to .hermes/plans then act.\n"
         "    - requesting-code-review: Pre-commit review of the working tree.\n"
+        "    - debugging-hermes-tui-commands: Debug the Hermes TUI slash commands.\n"
         "</available_skills>\n"
     )
 
     def sanitize(text: str) -> str:
+        # Reformat (and skill-name disguise) runs FIRST, matching install.py.
+        text = adapter._reformat_available_skills_block(text)
         text = text.replace("Hermes Agent", "Claude Code")
         text = text.replace("Hermes agent", "Claude Code")
         text = text.replace("hermes-agent", "claude-code")
         text = text.replace("Nous Research", "Anthropic")
         text = text.replace("claude-code.nousresearch.com", "claude-code.anthropic.com")
-        text = adapter._reformat_available_skills_block(text)
         text = re.sub(r"\n?Host:\s*[^\n]*\nUser home directory:[^\n]*\nCurrent working directory:[^\n]*\n(?:Note:[^\n]*\n)?", "\n", text)
         text = re.sub(r"\n?Shell: on this [^\n]+ host your `?terminal`? tool[\s\S]*?(?:POSIX equivalents[^\n]*\n|will NOT work[^\n]*\n)", "\n", text)
         text = re.sub(r"Conversation started:[^\n]*\nModel:[^\n]*\nProvider:[^\n]*\n?", "", text)
@@ -198,7 +200,9 @@ def main() -> int:
 
     patterns = [
         (r"\bHermes\b", "Hermes (capital, word)"),
+        (r"\bhermes\b", "hermes (lower, word) — e.g. skill-name slug"),
         (r"\bNous\b", "Nous (capital, word)"),
+        (r"\bnous\b", "nous (lower, word)"),
         (r"~/\.hermes/", "~/.hermes/ path"),
         (r"\$HERMES_", "$HERMES_ env var"),
         (r"\bhermes-agent\b", "hermes-agent literal"),
@@ -276,8 +280,33 @@ def main() -> int:
             print("  [OK] real dumped system prompt has no residual leaks")
 
     print()
+    print("=" * 70)
+    print("4. SKILL-NAME DISGUISE ROUND-TRIP (skill_view/skill_manage args)")
+    print("=" * 70)
+    # The catalog above carried "debugging-hermes-tui-commands"; building the
+    # request disguised it (sections 2/3 ran the reformat). The inbound
+    # transport reverses skill_view(name=...) via this same map, so loading a
+    # disguised skill still resolves to the real on-disk name.
+    skill_fail = 0
+    expect = {
+        "debugging-claude-tui-commands": "debugging-hermes-tui-commands",
+        "claude-code": "hermes-agent",  # pre-seeded fixed rewrite
+    }
+    for disguised, original in expect.items():
+        back = adapter._oauth_undisguise_skill_name(disguised)
+        ok = back == original
+        skill_fail += 0 if ok else 1
+        print(f"  [{'OK' if ok else 'FAIL'}] skill_view(name={disguised!r}) -> {back!r}"
+              + ("" if ok else f"  (expected {original!r})"))
+    # A token-free skill must be left untouched (identity, not in the map).
+    plain = adapter._oauth_undisguise_skill_name("requesting-code-review")
+    plain_ok = plain == "requesting-code-review"
+    skill_fail += 0 if plain_ok else 1
+    print(f"  [{'OK' if plain_ok else 'FAIL'}] token-free skill untouched: {plain!r}")
+
+    print()
     print("DONE")
-    return 0 if (fail == 0 and not leaks and not e2e_leaks) else 1
+    return 0 if (fail == 0 and not leaks and not e2e_leaks and not skill_fail) else 1
 
 
 if __name__ == "__main__":

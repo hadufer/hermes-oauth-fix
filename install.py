@@ -88,6 +88,55 @@ def _oauth_unrename_tool(name: str) -> str:
     return name
 
 
+# ── Skill-name disguise (bijection, mirrors the tool-name mapping) ────────
+# A skill whose slug carries a product token (e.g. "debugging-hermes-tui",
+# or the "hermes-agent" help skill) would otherwise ship that token in the
+# skills catalog on every request. We rewrite the token OUT of the name in
+# the catalog and remember disguised->original here so the inbound
+# skill_view/skill_manage `name` argument can be mapped back — otherwise the
+# model would call a name that does not exist on disk and the load would
+# fail. Pure string transform: portable across Windows/Linux/macOS.
+#
+# Pre-seeded with the fixed "hermes-agent" -> "claude-code" rewrite that the
+# system-prompt sanitizer always applies, so skill_view still resolves the
+# help skill even when the catalog does not list it.
+_OAUTH_SKILL_DISGUISE: Dict[str, str] = {"claude-code": "hermes-agent"}
+
+
+def _oauth_disguise_skill_name(name: str, reserved: "set | None" = None) -> str:
+    disguised = name
+    disguised = disguised.replace("hermes-agent", "claude-code")
+    disguised = disguised.replace("hermes", "claude")
+    disguised = disguised.replace("nous", "anthropic")
+    if disguised == name:
+        return name
+    # Never shadow a real skill, and never double-book one disguise onto two
+    # different originals — either case makes the reverse ambiguous, so we
+    # leave the original untouched (it leaks but still loads). Rare.
+    if reserved and disguised in reserved:
+        return name
+    prior = _OAUTH_SKILL_DISGUISE.get(disguised)
+    if prior is not None and prior != name:
+        return name
+    _OAUTH_SKILL_DISGUISE[disguised] = name
+    return disguised
+
+
+def _oauth_undisguise_skill_name(name: str) -> str:
+    return _OAUTH_SKILL_DISGUISE.get(name, name)
+
+
+def _oauth_scrub_skill_text(text: str) -> str:
+    # Lossy token removal for catalog display text (category names, skill
+    # descriptions) — these are never used as skill_view arguments, so no
+    # reverse mapping is needed. Capital-case forms are handled by the
+    # \\bHermes\\b catch-all that runs later over the whole prompt.
+    text = text.replace("hermes-agent", "claude-code")
+    text = text.replace("hermes", "claude")
+    text = text.replace("nous", "anthropic")
+    return text
+
+
 def _reformat_available_skills_block(text: str) -> str:
     import re as _re
 
@@ -127,14 +176,16 @@ def _reformat_available_skills_block(text: str) -> str:
         "`mcp__h__skill_view(name=<module-name>)`. Pick the module "
         "that best matches the task before answering.\\n"
     )
+    all_names = {s[0] for _c in categories for s in _c[2]}
     for cat_name, cat_desc, skills in categories:
-        chunks.append(f"\\n### {cat_name}")
+        chunks.append(f"\\n### {_oauth_scrub_skill_text(cat_name)}")
         if cat_desc:
-            chunks.append(f"\\n{cat_desc}\\n")
+            chunks.append(f"\\n{_oauth_scrub_skill_text(cat_desc)}\\n")
         else:
             chunks.append("\\n")
         for skill_name, skill_desc in skills:
-            chunks.append(f"- `{skill_name}` — {skill_desc}\\n")
+            disguised = _oauth_disguise_skill_name(skill_name, all_names)
+            chunks.append(f"- `{disguised}` — {_oauth_scrub_skill_text(skill_desc)}\\n")
 
     new_block = "".join(chunks)
     return text[: m.start()] + new_block + text[m.end():]
@@ -180,6 +231,11 @@ ADAPTER_OAUTH_PATCHED = '''        import re as _re
             if isinstance(block, dict) and block.get("type") == "text":
                 text = block.get("text", "")
 
+                # Reformat the skills catalog FIRST, while skill names are
+                # still pristine, so disguised (token-free) names are recorded
+                # for the reverse map and survive the rewrites below unchanged.
+                text = _reformat_available_skills_block(text)
+
                 text = text.replace("Hermes Agent", "Claude Code")
                 text = text.replace("Hermes agent", "Claude Code")
                 text = text.replace("hermes-agent", "claude-code")
@@ -188,8 +244,6 @@ ADAPTER_OAUTH_PATCHED = '''        import re as _re
                     "claude-code.nousresearch.com",
                     "claude-code.anthropic.com",
                 )
-
-                text = _reformat_available_skills_block(text)
 
                 text = _re.sub(
                     r"\\n?Host:\\s*[^\\n]*\\nUser home directory:[^\\n]*\\nCurrent working directory:[^\\n]*\\n(?:Note:[^\\n]*\\n)?",
@@ -345,7 +399,7 @@ TRANSPORT_PREFIX_ORIGINAL = '''        strip_tool_prefix = kwargs.get("strip_too
         _MCP_PREFIX = "mcp_"'''
 
 TRANSPORT_PREFIX_PATCHED = '''        strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
-        from agent.anthropic_adapter import _oauth_unrename_tool'''
+        from agent.anthropic_adapter import _oauth_unrename_tool, _oauth_undisguise_skill_name'''
 
 
 TRANSPORT_STRIP_ORIGINAL = '''            elif block.type == "tool_use":
@@ -366,7 +420,11 @@ TRANSPORT_STRIP_ORIGINAL = '''            elif block.type == "tool_use":
 TRANSPORT_STRIP_PATCHED = '''            elif block.type == "tool_use":
                 name = block.name
                 if strip_tool_prefix:
-                    name = _oauth_unrename_tool(name)'''
+                    name = _oauth_unrename_tool(name)
+                    if name in ("skill_view", "skill_manage") and isinstance(block.input, dict):
+                        _sk = block.input.get("name")
+                        if isinstance(_sk, str):
+                            block.input["name"] = _oauth_undisguise_skill_name(_sk)'''
 
 
 PATCHED_MARKER_ADAPTER = "_oauth_rename_tool"
