@@ -117,6 +117,7 @@ def sanitize(text: str) -> str:
     )
     text = re.sub(r"\bWebUI\b", "web interface", text)  # catch-all, mirrors install.py
     text = re.sub(r"\bHermes\b", "Claude Code", text)
+    text = re.sub(r"\bNous\b", "Anthropic", text)  # symmetric bare-word catch-all
     return text
 
 

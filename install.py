@@ -96,18 +96,39 @@ def _oauth_unrename_tool(name: str) -> str:
 # skill_view/skill_manage `name` argument can be mapped back — otherwise the
 # model would call a name that does not exist on disk and the load would
 # fail. Pure string transform: portable across Windows/Linux/macOS.
-#
-# Pre-seeded with the fixed "hermes-agent" -> "claude-code" rewrite that the
-# system-prompt sanitizer always applies, so skill_view still resolves the
-# help skill even when the catalog does not list it.
-_OAUTH_SKILL_DISGUISE: Dict[str, str] = {"claude-code": "hermes-agent"}
+_OAUTH_SKILL_DISGUISE: Dict[str, str] = {}
+
+# Ordered product-name token swaps, most-specific first. ONE source of truth
+# for both the skill-name disguise and the catalog-text scrub (and kept in step
+# with the system-prompt replaces). Applied word-bounded and case-insensitively
+# by _oauth_swap_tokens, so they hit real product tokens ("hermes", "Nous",
+# "hermes-agent", "Hermes-Toolkit") without mangling words that merely contain
+# them as a substring ("luminous", "ominous").
+_OAUTH_TOKEN_SWAPS = (
+    ("hermes-agent", "claude-code"),
+    ("hermes", "claude"),
+    ("nous", "anthropic"),
+)
+_OAUTH_TOKEN_MAP = {_t: _r for _t, _r in _OAUTH_TOKEN_SWAPS}
+
+
+def _oauth_swap_tokens(text: str) -> str:
+    import re as _re
+    _pat = r"\\b(" + "|".join(_re.escape(_t) for _t, _ in _OAUTH_TOKEN_SWAPS) + r")\\b"
+    return _re.sub(
+        _pat,
+        lambda _m: _OAUTH_TOKEN_MAP[_m.group(0).lower()],
+        text,
+        flags=_re.IGNORECASE,
+    )
 
 
 def _oauth_disguise_skill_name(name: str, reserved: "set | None" = None) -> str:
-    disguised = name
-    disguised = disguised.replace("hermes-agent", "claude-code")
-    disguised = disguised.replace("hermes", "claude")
-    disguised = disguised.replace("nous", "anthropic")
+    # Case-insensitive + word-bounded, so "Hermes-Toolkit" is disguised HERE
+    # (rather than later mangled into "Claude Code-Toolkit" by the \\bHermes\\b
+    # catch-all, which would inject a space and break the round-trip) and
+    # "luminous-ui" is left untouched.
+    disguised = _oauth_swap_tokens(name)
     if disguised == name:
         return name
     # Never shadow a real skill, and never double-book one disguise onto two
@@ -123,18 +144,21 @@ def _oauth_disguise_skill_name(name: str, reserved: "set | None" = None) -> str:
 
 
 def _oauth_undisguise_skill_name(name: str) -> str:
+    # Process-global, accumulate-only. Shared by the outbound writer and the
+    # inbound reader; intentionally never cleared (a per-request reset would
+    # race the response of an in-flight request in an async server). The
+    # disguise is deterministic so entries stay consistent; the only edge is a
+    # skill renamed AND its disguised name reused by a different skill within
+    # one long-lived process (documented in the README).
     return _OAUTH_SKILL_DISGUISE.get(name, name)
 
 
 def _oauth_scrub_skill_text(text: str) -> str:
     # Lossy token removal for catalog display text (category names, skill
-    # descriptions) — these are never used as skill_view arguments, so no
-    # reverse mapping is needed. Capital-case forms are handled by the
-    # \\bHermes\\b catch-all that runs later over the whole prompt.
-    text = text.replace("hermes-agent", "claude-code")
-    text = text.replace("hermes", "claude")
-    text = text.replace("nous", "anthropic")
-    return text
+    # descriptions) — never used as skill_view arguments, so no reverse map.
+    # Same word-bounded, case-insensitive swap as the disguise, so capital
+    # "Nous"/"Hermes" in a description are handled here too.
+    return _oauth_swap_tokens(text)
 
 
 def _reformat_available_skills_block(text: str) -> str:
@@ -346,6 +370,11 @@ ADAPTER_OAUTH_PATCHED = '''        import re as _re
                 )
 
                 text = _re.sub(r"\\bHermes\\b", "Claude Code", text)
+                # Symmetric bare-word catch-all for Nous. The rules above only
+                # rewrite Nous when followed by subscription/auth/managed/etc.;
+                # a bare "Nous" (e.g. "Nous-grade", "Nous tech") would otherwise
+                # leak straight through, unlike Hermes which has this catch-all.
+                text = _re.sub(r"\\bNous\\b", "Anthropic", text)
 
                 block["text"] = text
 
@@ -582,6 +611,10 @@ def cmd_apply(hermes_root: Path) -> int:
     print(f"  {TRANSPORT_REL}: {transport_status}")
     if transport_status not in ("patched", "already-patched"):
         restore_backup(adapter)
+        # patch_transport may have restored the transport to its original via
+        # _ensure_original (on a re-apply) but left the .bak behind; clean it
+        # so we don't exit with an orphaned backup and asymmetric state.
+        restore_backup(transport)
         return 1
 
     if not validate_syntax(adapter) or not validate_syntax(transport):

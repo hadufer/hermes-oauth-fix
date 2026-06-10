@@ -190,6 +190,7 @@ def main() -> int:
         text = text.replace("You are in the Hermes WebUI, a browser-based chat interface.", "Your output is delivered through a browser-based chat interface.")
         text = re.sub(r"\bWebUI\b", "web interface", text)  # catch-all, mirrors install.py
         text = re.sub(r"\bHermes\b", "Claude Code", text)
+        text = re.sub(r"\bNous\b", "Anthropic", text)  # symmetric bare-word catch-all
         return text
 
     sanitized = sanitize(SAMPLE_PROMPT)
@@ -283,22 +284,26 @@ def main() -> int:
     print("=" * 70)
     print("4. SKILL-NAME DISGUISE ROUND-TRIP (skill_view/skill_manage args)")
     print("=" * 70)
-    # The catalog above carried "debugging-hermes-tui-commands"; building the
-    # request disguised it (sections 2/3 ran the reformat). The inbound
-    # transport reverses skill_view(name=...) via this same map, so loading a
-    # disguised skill still resolves to the real on-disk name.
+    # Self-contained: drive disguise -> undisguise explicitly (no reliance on
+    # earlier sections having populated the global map). Verifies the token is
+    # gone from the disguised name AND the inbound reverse recovers the exact
+    # on-disk name, for lowercase, hyphenated, and Title-case slugs.
     skill_fail = 0
-    expect = {
-        "debugging-claude-tui-commands": "debugging-hermes-tui-commands",
-        "claude-code": "hermes-agent",  # pre-seeded fixed rewrite
-    }
-    for disguised, original in expect.items():
+    for original in ("debugging-hermes-tui-commands", "hermes-s6-container-supervision",
+                     "hermes-agent", "Hermes-Toolkit"):
+        disguised = adapter._oauth_disguise_skill_name(original)
         back = adapter._oauth_undisguise_skill_name(disguised)
-        ok = back == original
+        token_gone = "hermes" not in disguised.lower() and "nous" not in disguised.lower()
+        ok = (back == original) and token_gone and (disguised != original)
         skill_fail += 0 if ok else 1
-        print(f"  [{'OK' if ok else 'FAIL'}] skill_view(name={disguised!r}) -> {back!r}"
-              + ("" if ok else f"  (expected {original!r})"))
-    # A token-free skill must be left untouched (identity, not in the map).
+        print(f"  [{'OK' if ok else 'FAIL'}] {original!r} -> {disguised!r} -> {back!r}")
+    # Substring safety: a word that merely CONTAINS "nous"/"hermes" is untouched.
+    for safe in ("luminous-ui", "ominous-mode", "synchronous-jobs"):
+        d = adapter._oauth_disguise_skill_name(safe)
+        ok = d == safe
+        skill_fail += 0 if ok else 1
+        print(f"  [{'OK' if ok else 'FAIL'}] substring-safe: {safe!r} -> {d!r} (must be unchanged)")
+    # A token-free skill must be left untouched and never reverse-mapped.
     plain = adapter._oauth_undisguise_skill_name("requesting-code-review")
     plain_ok = plain == "requesting-code-review"
     skill_fail += 0 if plain_ok else 1
