@@ -302,8 +302,17 @@ ADAPTER_OAUTH_PATCHED = '''        import re as _re
                     text,
                 )
 
+                # Strip the volatile timestamp/model/provider block. The block has
+                # four conditional shapes (any subset of the three trailing lines),
+                # built incrementally in system_prompt.py: `Conversation started: …`
+                # is mandatory; `Session ID: …` is appended when pass_session_id is
+                # set; `Model: …` and `Provider: …` are each appended when set on
+                # the agent. The earlier regex required Model+Provider in fixed
+                # order, so the moment `pass_session_id` was enabled the whole
+                # block fell out of the strip and leaked `Provider: nous` straight
+                # through. Make every trailing line optional and order-tolerant.
                 text = _re.sub(
-                    r"Conversation started:[^\\n]*\\nModel:[^\\n]*\\nProvider:[^\\n]*\\n?",
+                    r"Conversation started:[^\\n]*(?:\\nSession ID:[^\\n]*)?(?:\\nModel:[^\\n]*)?(?:\\nProvider:[^\\n]*)?\\n?",
                     "",
                     text,
                 )
@@ -334,6 +343,26 @@ ADAPTER_OAUTH_PATCHED = '''        import re as _re
                     text,
                 )
 
+                # Path-component scrub for `hermes` directories inside absolute
+                # paths. Required for Windows installs where get_hermes_home()
+                # resolves to %LOCALAPPDATA%\hermes (NOT ~/.hermes); a context
+                # file (SOUL.md, .hermes.md, HERMES.md) large enough to trigger
+                # the truncation marker in prompt_builder._truncate_content emits
+                # a literal `C:\\Users\\<u>\\AppData\\Local\\hermes\\…` into the
+                # prompt. The earlier `.hermes/` literal misses the Windows form
+                # (different separator + no leading dot), the `.hermes.md` /
+                # `HERMES.md` literals miss the directory component, and the
+                # bare-word `\\bHermes\\b` is case-sensitive on capital H.
+                # Bounded by path separators so it never rewrites `hermes` in
+                # prose; only inside path-shaped runs. Runs BEFORE the literal
+                # `.hermes/` replace so both POSIX and Windows forms collapse in
+                # one pass.
+                text = _re.sub(
+                    r"(?<=[\\\\/.])hermes(?=[\\\\/])",
+                    "claude",
+                    text,
+                    flags=_re.IGNORECASE,
+                )
                 text = text.replace(".hermes/", ".claude/")
                 text = text.replace("$HERMES_", "$CLAUDE_")
                 text = text.replace(".hermes.md", ".claude.md")

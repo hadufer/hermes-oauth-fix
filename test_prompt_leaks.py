@@ -91,12 +91,13 @@ def sanitize(text: str) -> str:
     text = text.replace("claude-code.nousresearch.com", "claude-code.anthropic.com")
     text = re.sub(r"\n?Host:\s*[^\n]*\nUser home directory:[^\n]*\nCurrent working directory:[^\n]*\n(?:Note:[^\n]*\n)?", "\n", text)
     text = re.sub(r"\n?Shell: on this [^\n]+ host your `?terminal`? tool[\s\S]*?(?:POSIX equivalents[^\n]*\n|will NOT work[^\n]*\n)", "\n", text)
-    text = re.sub(r"Conversation started:[^\n]*\nModel:[^\n]*\nProvider:[^\n]*\n?", "", text)
+    text = re.sub(r"Conversation started:[^\n]*(?:\nSession ID:[^\n]*)?(?:\nModel:[^\n]*)?(?:\nProvider:[^\n]*)?\n?", "", text)
     text = re.sub(r"<!--\s*\nThis file defines the agent's personality[\s\S]*?-->\n?", "", text)
     text = re.sub(r"^#\s+Claude Code Persona\s*\n+", "", text)
     text = re.sub(r"\s*\(e\.g\.\s*`hermes [^`]*`(?:,\s*`hermes [^`]*`)*\)", "", text)
     text = re.sub(r"#\s*Nous Subscription\n[\s\S]*?hermes status\.\s*", "", text)
     text = re.sub(r"#\s*Kanban task execution protocol\n[\s\S]*?cross-agent handoffs that outlive one API loop\.\s*", "", text)
+    text = re.sub(r"(?<=[\\/.])hermes(?=[\\/])", "claude", text, flags=re.IGNORECASE)
     text = text.replace(".hermes/", ".claude/")
     text = text.replace("$HERMES_", "$CLAUDE_")
     text = text.replace(".hermes.md", ".claude.md")
@@ -137,6 +138,50 @@ LEAK_PATTERNS = [
 ]
 
 
+# Synthetic block scenarios — conditional shapes that the AST-constant scan
+# cannot reach (they're assembled at runtime in build_system_prompt). Each is a
+# minimal-faithful reconstruction of a real assembly path, used to lock in
+# coverage for regressions like the Session-ID-breaks-timestamp-strip and the
+# Windows-path-component leak.
+SYNTHETIC_SCENARIOS = [
+    (
+        "timestamp_block_with_session_id",
+        "Conversation started: Friday, June 19, 2026\n"
+        "Session ID: abc-123-def\n"
+        "Model: claude-opus-4-7\n"
+        "Provider: nous",
+    ),
+    (
+        "timestamp_block_session_id_only",
+        "Conversation started: Friday, June 19, 2026\n"
+        "Session ID: abc-123-def",
+    ),
+    (
+        "timestamp_block_provider_only",
+        "Conversation started: Friday, June 19, 2026\n"
+        "Provider: nous",
+    ),
+    (
+        "soul_md_truncation_marker_windows",
+        "\n\n[...truncated SOUL.md: kept 800+200 of 5000 chars. The middle is "
+        "omitted — if you need the full instructions, read the complete file "
+        "with the read_file tool: C:\\Users\\Zero\\AppData\\Local\\hermes\\SOUL.md]\n\n",
+    ),
+    (
+        "hermes_md_truncation_marker_windows",
+        "\n\n[...truncated .hermes.md: kept 800+200 of 5000 chars. The middle "
+        "is omitted — if you need the full instructions, read the complete "
+        "file with the read_file tool: C:\\Users\\Zero\\projects\\foo\\.hermes.md]\n\n",
+    ),
+    (
+        "soul_md_truncation_marker_posix",
+        "\n\n[...truncated SOUL.md: kept 800+200 of 5000 chars. The middle is "
+        "omitted — if you need the full instructions, read the complete file "
+        "with the read_file tool: /home/user/.hermes/SOUL.md]\n\n",
+    ),
+]
+
+
 def main() -> int:
     consts = extract_named_constants(ADAPTER, PROMPT_CONSTANTS)
     missing = [n for n in PROMPT_CONSTANTS if n not in consts]
@@ -167,12 +212,35 @@ def main() -> int:
         for c in ctxs:
             print(f"    …{c}…")
 
-    print("\n" + "=" * 74)
-    print(f"TOTAL residual hits in actual-prompt blocks: {total}")
-    print("PASS — no product-name leaks" if total == 0
-          else f"FAIL — {total} residual leak(s) would re-trigger the detector")
+    print()
     print("=" * 74)
-    return 1 if total else 0
+    print("SYNTHETIC ASSEMBLED-AT-RUNTIME SCENARIOS (conditional prompt shapes)")
+    print("=" * 74)
+    synth_total = 0
+    for label, block in SYNTHETIC_SCENARIOS:
+        out = sanitize(block)
+        scenario_hits = []
+        for pat, plabel in LEAK_PATTERNS:
+            hits = list(re.finditer(pat, out))
+            if hits:
+                scenario_hits.append((plabel, len(hits), out))
+        if not scenario_hits:
+            print(f"  [OK]  {label}")
+            continue
+        synth_total += sum(n for _, n, _ in scenario_hits)
+        print(f"  [FAIL] {label}")
+        for plabel, n, out in scenario_hits:
+            print(f"        x{n} {plabel}  output: {out!r}")
+
+    print()
+    print("=" * 74)
+    print(f"TOTAL residual hits in actual-prompt blocks: {total}")
+    print(f"TOTAL residual hits in synthetic scenarios:  {synth_total}")
+    grand = total + synth_total
+    print("PASS — no product-name leaks" if grand == 0
+          else f"FAIL — {grand} residual leak(s) would re-trigger the detector")
+    print("=" * 74)
+    return 1 if grand else 0
 
 
 if __name__ == "__main__":
